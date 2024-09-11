@@ -1,0 +1,90 @@
+[CmdletBinding()]
+Param(
+    [Parameter(Mandatory=$False,Position=1)]
+    [string]$ComputerName
+)
+
+Function ConvertTo-Char ($Array) {
+    $Output = ''
+    ForEach($char in $Array) { 
+        $Output += [char]$char -join ""
+    }
+    return $Output
+}
+
+Function ConvertTo-Manufacturer ($Code) {
+    $Manufacturer = @(
+        [pscustomobject]@{'Monitor Manufacturer Code'='ACI';'Monitor Manufacturer'='Asus (ASUSTeK Computer Inc.)'}
+        [pscustomobject]@{'Monitor Manufacturer Code'='ACR';'Monitor Manufacturer'='Acer America Corp.'}
+        # ... (other manufacturer codes here) ...
+        [pscustomobject]@{'Monitor Manufacturer Code'='ZCM';'Monitor Manufacturer'='Zenith Data Systems'}
+    )
+    $Output = $Manufacturer | Where-Object {$_.'Monitor Manufacturer Code' -eq $Code} | select -ExpandProperty 'Monitor Manufacturer'
+    If (!$Output) {Return $Code}
+    else {Return $Output}
+}
+
+Try {
+    # query Wmi for monitor info
+    If ($ComputerName) {
+        $Query = Get-WmiObject -ComputerName $ComputerName -Query "Select * FROM WMIMonitorID" -Namespace root\wmi -ErrorAction Stop
+    }
+    else {
+        $Query = Get-WmiObject -Query "Select * FROM WMIMonitorID" -Namespace root\wmi -ErrorAction Stop
+    }
+
+    # Initialise a variable to hold the single line output
+    $AllMonitorDetails = ""
+
+    ForEach ($Monitor in $Query) {
+        # query Wmi for connection input type used
+        $QueryConn = Get-WmiObject -Query "Select * from WmiMonitorConnectionParams" -Namespace root\wmi -ErrorAction Stop | where {$_.InstanceName -eq $Monitor.InstanceName}
+        Switch ($QueryConn.VideoOutputTechnology) {
+            -1  {$Connectiontype="OTHER"}
+            0   {$Connectiontype="HD15 (VGA)"}
+            4   {$Connectiontype="DVI"}
+            5   {$Connectiontype="HDMI"}
+            10  {$Connectiontype="Displayport"}
+            15  {$Connectiontype="Miracast"}
+            Default {$Connectiontype="Notebook or unknown"}
+        }
+
+        # query Wmi for preferred mode
+        $QuerySourceMode = Get-WmiObject -Query "SELECT * FROM WmiMonitorListedSupportedSourceModes" -Namespace root\wmi -ErrorAction Stop | where {$_.InstanceName -eq $Monitor.InstanceName}
+        $preferredMode = "$($QuerySourceMode.MonitorSourceModes[$QuerySourceMode.PreferredMonitorSourceModeIndex].HorizontalActivePixels)x$($QuerySourceMode.MonitorSourceModes[$QuerySourceMode.PreferredMonitorSourceModeIndex].VerticalActivePixels)"
+        
+        # if supported by hardware, query Wmi for current brightness
+        $QueryBrightness = Get-WmiObject -Query "SELECT * FROM WmiMonitorBrightness" -Namespace root\wmi -ErrorAction SilentlyContinue | where {$_.InstanceName -eq $Monitor.InstanceName}
+        If (!$QueryBrightness) {
+            $Brightness = 'Not available'
+        }
+        else {
+            $Brightness = $QueryBrightness.CurrentBrightness
+        }
+
+        # Format each monitor's details as a single line string
+        $line = "{0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8}" -f `
+            (ConvertTo-Manufacturer(ConvertTo-Char($Monitor.ManufacturerName))),
+            (ConvertTo-Char($Monitor.userfriendlyname)),
+            (ConvertTo-Char($Monitor.serialnumberid)),
+            $Monitor.WeekOfManufacture,
+            $Monitor.YearOfManufacture,
+            $Connectiontype,
+            $Brightness,
+            $preferredMode,
+            $Monitor.Active
+
+        # Append the details of the current monitor to the all-in-one string
+        $AllMonitorDetails += $line + " | "
+    }
+
+    # Remove the trailing delimiter
+    $AllMonitorDetails = $AllMonitorDetails.TrimEnd(" | ")
+
+    # Output the single line string with all monitor details
+    Write-Output $AllMonitorDetails
+    Exit 0
+}
+Catch {
+    Exit $($Error[0])
+}
